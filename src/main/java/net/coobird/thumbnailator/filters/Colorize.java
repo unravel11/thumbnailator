@@ -92,6 +92,7 @@ public final class Colorize implements ImageFilter {
 		int a = alpha;
 		
 		this.c = new Color(r, g, b, a);
+		System.out.println("Colorize: " + this.c);
 	}
 	
 	public BufferedImage apply(BufferedImage img) {
@@ -109,7 +110,7 @@ public final class Colorize implements ImageFilter {
 		if (img.getType() != newImage.getType()) {
 			return BufferedImages.copy(newImage, img.getType());
 		}
-
+		System.out.println("Colorize: " + newImage);
 		return newImage;
 	}
 }

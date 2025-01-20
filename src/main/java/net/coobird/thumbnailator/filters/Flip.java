@@ -51,7 +51,7 @@ public class Flip {
 			Graphics g = newImage.getGraphics();
 			g.drawImage(img, width, 0, 0, height, 0, 0, width, height, null);
 			g.dispose();
-			
+			System.err.println("Flip.HORIZONTAL.apply(BufferedImage img) called");
 			return newImage;
 		}
 	};
