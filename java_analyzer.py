@@ -148,103 +148,103 @@ def main():
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.getLogger('JavaAnalyzer').setLevel(log_level)
 
-#     diff_text = """diff --git src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
-# index d766fa5..34cd875 100644
-# --- src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
-# +++ dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
-# @@ -85,31 +85,33 @@ public final class Colorize implements ImageFilter {
-#                   "Specified alpha value is outside the range of allowed " +
-#                   "values.");
-#       }
+    diff_text = """diff --git src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
+index d766fa5..34cd875 100644
+--- src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
++++ dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
+@@ -85,31 +85,33 @@ public final class Colorize implements ImageFilter {
+                  "Specified alpha value is outside the range of allowed " +
+                  "values.");
+      }
         
-#       int r = c.getRed();
-#       int g = c.getGreen();
-#       int b = c.getBlue();
-#       int a = alpha;
+      int r = c.getRed();
+      int g = c.getGreen();
+      int b = c.getBlue();
+      int a = alpha;
         
-#       this.c = new Color(r, g, b, a);
-# +     System.out.println("Colorize: " + this.c);
-#   }
+      this.c = new Color(r, g, b, a);
++     System.out.println("Colorize: " + this.c);
+  }
     
-#   public BufferedImage apply(BufferedImage img) {
-#       int width = img.getWidth();
-#       int height = img.getHeight();
+  public BufferedImage apply(BufferedImage img) {
+      int width = img.getWidth();
+      int height = img.getHeight();
         
-#       BufferedImage newImage = new BufferedImageBuilder(width, height).build();
+      BufferedImage newImage = new BufferedImageBuilder(width, height).build();
         
-#       Graphics2D g = newImage.createGraphics();
-#       g.drawImage(img, 0, 0, null);
-#       g.setColor(c);
-#       g.fillRect(0, 0, width, height);
-#       g.dispose();
+      Graphics2D g = newImage.createGraphics();
+      g.drawImage(img, 0, 0, null);
+      g.setColor(c);
+      g.fillRect(0, 0, width, height);
+      g.dispose();
  
-#       if (img.getType() != newImage.getType()) {
-#           return BufferedImages.copy(newImage, img.getType());
-#       }
-# -
-# +     System.out.println("Colorize: " + newImage);
-#       return newImage;
-#   }
-#  }
-# +
-# diff --git src://src/main/java/net/coobird/thumbnailator/filters/Flip.java dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
-# index 98d5432..eaed0f5 100644
-# --- src://src/main/java/net/coobird/thumbnailator/filters/Flip.java
-# +++ dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
-# @@ -44,21 +44,21 @@ public class Flip {
-#       public BufferedImage apply(BufferedImage img) {
-#           int width = img.getWidth();
-#           int height = img.getHeight();
+      if (img.getType() != newImage.getType()) {
+          return BufferedImages.copy(newImage, img.getType());
+      }
+-
++     System.out.println("Colorize: " + newImage);
+      return newImage;
+  }
+ }
++
+diff --git src://src/main/java/net/coobird/thumbnailator/filters/Flip.java dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
+index 98d5432..eaed0f5 100644
+--- src://src/main/java/net/coobird/thumbnailator/filters/Flip.java
++++ dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
+@@ -44,21 +44,21 @@ public class Flip {
+      public BufferedImage apply(BufferedImage img) {
+          int width = img.getWidth();
+          int height = img.getHeight();
             
-#           BufferedImage newImage =
-#                   new BufferedImageBuilder(width, height, img.getType()).build();
+          BufferedImage newImage =
+                  new BufferedImageBuilder(width, height, img.getType()).build();
             
-#           Graphics g = newImage.getGraphics();
-#           g.drawImage(img, width, 0, 0, height, 0, 0, width, height, null);
-#           g.dispose();
-# -         
-# +            System.err.println("Flip.HORIZONTAL.apply(BufferedImage img) called");
-#           return newImage;
-#       }
-#   };
+          Graphics g = newImage.getGraphics();
+          g.drawImage(img, width, 0, 0, height, 0, 0, width, height, null);
+          g.dispose();
+-         
++            System.err.println("Flip.HORIZONTAL.apply(BufferedImage img) called");
+          return newImage;
+      }
+  };
     
-#   /**
-#    * An image filter which performs a vertical flip of the image.
-#    */
-#   public static final ImageFilter VERTICAL = new ImageFilter() {
-#       public BufferedImage apply(BufferedImage img) {
-#     """
+  /**
+   * An image filter which performs a vertical flip of the image.
+   */
+  public static final ImageFilter VERTICAL = new ImageFilter() {
+      public BufferedImage apply(BufferedImage img) {
+    """
 
 
-    # diff文本示例
-    diff_text = """diff --git src://src/main/java/com/example/service/UserService.java dst://src/main/java/com/example/service/UserService.java
-index a123456..b789012 100644
---- src://src/main/java/com/example/service/UserService.java
-+++ dst://src/main/java/com/example/service/UserService.java
-@@ -12,6 +12,7 @@ public class UserService {
-     public User createUser(String name, String email) {
-         logUtil.info("Creating new user: " + name);
-+        logUtil.debug("Validating email: " + email);
+#     # diff文本示例
+#     diff_text = """diff --git src://src/main/java/com/example/service/UserService.java dst://src/main/java/com/example/service/UserService.java
+# index a123456..b789012 100644
+# --- src://src/main/java/com/example/service/UserService.java
+# +++ dst://src/main/java/com/example/service/UserService.java
+# @@ -12,6 +12,7 @@ public class UserService {
+#      public User createUser(String name, String email) {
+#          logUtil.info("Creating new user: " + name);
+# +        logUtil.debug("Validating email: " + email);
          
-         if (!validationUtil.validateEmail(email)) {
-             logUtil.error("Invalid email: " + email);
-@@ -25,6 +26,7 @@ public class UserService {
-     public void updateUser(Long id, String name) {
-         User user = userRepository.findById(id);
-+        validationUtil.validateName(name);
-         user.setName(name);
-         userRepository.save(user);
-         logUtil.info("User updated: " + id);
-diff --git src://src/main/java/com/example/util/ValidationUtil.java dst://src/main/java/com/example/util/ValidationUtil.java
-index 1234567..89abcdef 100644
---- src://src/main/java/com/example/util/ValidationUtil.java
-+++ dst://src/main/java/com/example/util/ValidationUtil.java
-@@ -3,4 +3,5 @@ public class ValidationUtil {
-     public boolean validateEmail(String email) {
-+        System.err.println("Validating email: " + email);
-         return email != null && email.contains("@");
-     }
- }"""
+#          if (!validationUtil.validateEmail(email)) {
+#              logUtil.error("Invalid email: " + email);
+# @@ -25,6 +26,7 @@ public class UserService {
+#      public void updateUser(Long id, String name) {
+#          User user = userRepository.findById(id);
+# +        validationUtil.validateName(name);
+#          user.setName(name);
+#          userRepository.save(user);
+#          logUtil.info("User updated: " + id);
+# diff --git src://src/main/java/com/example/util/ValidationUtil.java dst://src/main/java/com/example/util/ValidationUtil.java
+# index 1234567..89abcdef 100644
+# --- src://src/main/java/com/example/util/ValidationUtil.java
+# +++ dst://src/main/java/com/example/util/ValidationUtil.java
+# @@ -3,4 +3,5 @@ public class ValidationUtil {
+#      public boolean validateEmail(String email) {
+# +        System.err.println("Validating email: " + email);
+#          return email != null && email.contains("@");
+#      }
+#  }"""
     
     try:
         # 创建分析器并运行分析

@@ -49,6 +49,52 @@ class JavaASTExtractor:
             'android.',  # 如果需要处理Android项目
         }
 
+        # 定义要排除的包前缀
+        self.exclude_prefixes = {
+            # Java标准库
+            'java.',
+            'javax.',
+            'sun.',
+            'com.sun.',
+        }
+        
+        # 定义要排除的通用方法名
+        self.exclude_methods = {
+            # 迭代器相关
+            'iterator',
+            'hasNext',
+            'next',
+            'remove',
+            'forEach',
+            'stream',
+            'spliterator',
+            'listIterator',
+            
+            # Object类方法
+            'toString',
+            'equals',
+            'hashCode',
+            'getClass',
+            'clone',
+            'notify',
+            'notifyAll',
+            'wait',
+            'finalize',
+            
+            # 集合类通用方法
+            'size',
+            'isEmpty',
+            'contains',
+            'clear',
+            'add',
+            'remove',
+            
+            # 其他常见工具方法
+            'valueOf',
+            'length',
+            'trim'
+        }
+
     def _setup_logger(self):
         """配置日志记录器"""
         logger = logging.getLogger('JavaASTExtractor')
@@ -67,67 +113,6 @@ class JavaASTExtractor:
         
         return logger
 
-    # def parse_file(self, file_path):
-    #     """解析文件并返回AST字典"""
-    #     if file_path in self.ast_cache:
-    #         return self.ast_cache[file_path]
-
-    #     try:
-    #         full_path = os.path.join(self.src_root, file_path)
-    #         if not os.path.exists(full_path):
-    #             return None
-
-    #         with open(full_path, 'r', encoding='utf-8') as f:
-    #             source = f.read()
-    #             tree = javalang.parse.parse(source)
-    #             ast_dict = self.get_ast_dict(tree)
-    #             self.ast_cache[file_path] = ast_dict
-    #             return ast_dict
-    #     except Exception as e:
-    #         self.logger.error(f"解析文件出错 {file_path}: {str(e)}")
-    #         return None
-
-    # def get_ast_dict(self, tree):
-    #     """将javalang的AST转换为字典格式"""
-    #     def convert_node(node):
-    #         if isinstance(node, javalang.ast.Node):
-    #             result = {'type': node.__class__.__name__}
-    #             # 获取节点的所有属性
-    #             for attr_name in node.attrs:
-    #                 attr_value = getattr(node, attr_name)
-    #                 result[attr_name] = convert_node(attr_value)
-    #             return result
-    #         elif isinstance(node, list):
-    #             return [convert_node(item) for item in node]
-    #         elif isinstance(node, set):
-    #             return {convert_node(item) for item in node}
-    #         elif isinstance(node, javalang.tree.ReferenceType):  # 修改这里：使用 ReferenceType
-    #             # 处理类型引用
-    #             return {
-    #                 'type': 'ReferenceType',
-    #                 'name': node.name if hasattr(node, 'name') else None,
-    #                 'arguments': convert_node(node.arguments) if hasattr(node, 'arguments') else None,
-    #                 'dimensions': node.dimensions if hasattr(node, 'dimensions') else None,
-    #                 'sub_type': convert_node(node.sub_type) if hasattr(node, 'sub_type') and node.sub_type else None
-    #             }
-    #         elif isinstance(node, javalang.tokenizer.JavaToken):
-    #             # 处理Java令牌
-    #             return {
-    #                 'type': 'JavaToken',
-    #                 'value': node.value,
-    #                 'position': node.position if hasattr(node, 'position') else None
-    #             }
-    #         else:
-    #             # 处理基本类型
-    #             return node
-
-    #     try:
-    #         if tree is None:
-    #             return None
-    #         return convert_node(tree)
-    #     except Exception as e:
-    #         self.logger.error(f"AST转换失败: {str(e)}")
-    #         return None
 
     def build_project_index(self):
         """扫描整个项目，建立方法索引和调用图"""
@@ -196,32 +181,111 @@ class JavaASTExtractor:
     def _process_file(self, file_path):
         """处理单个文件，提取所有方法信息"""
         try:
-            self.logger.debug(f"\n开始处理文件: {file_path}")
+            normalized_path = os.path.normpath(file_path)
+            full_path = os.path.join(self.src_root, normalized_path)
             
-            # 解析文件
-            full_path = os.path.join(self.src_root, file_path)
+            # 读取并解析文件
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                tree = javalang.parse.parse(content)
-
-            # 获取包名
+            tree = javalang.parse.parse(content)
+            
+            # 获取包名和导入信息
             package_name = None
+            imports = {}
+            
+            # 处理包声明
             for _, node in tree.filter(javalang.tree.PackageDeclaration):
                 if isinstance(node.name, list):
-                    package_name = '.'.join(str(n.value) for n in node.name)
+                    package_name = '.'.join(str(n.value) for n in node.name if hasattr(n, 'value'))
                 else:
                     package_name = str(node.name)
+                self.logger.debug(f"包名: {package_name}")
                 break
-
-            self.logger.debug(f"包名: {package_name}")
-
-            # 处理所有类型声明（包括普通类和抽象类）
-            for path, type_decl in tree.filter(javalang.tree.ClassDeclaration):
-                # 获取类型名和完全限定名
-                type_name = type_decl.name
-                qualified_name = f"{package_name}.{type_name}" if package_name else type_name
+            
+            # 处理导入语句
+            for _, node in tree.filter(javalang.tree.Import):
+                try:
+                    if node.path:
+                        # 获取完整的导入路径
+                        if isinstance(node.path, list):
+                            import_parts = []
+                            for part in node.path:
+                                if hasattr(part, 'value'):
+                                    import_parts.append(part.value)
+                                else:
+                                    import_parts.append(str(part))
+                            import_path = '.'.join(import_parts)
+                        else:
+                            import_path = str(node.path)
+                        
+                        # 获取简单类名（最后一个部分）
+                        simple_name = import_path.split('.')[-1]
+                        imports[simple_name] = import_path
+                        self.logger.debug(f"添加导入: {simple_name} -> {import_path}")
+                except Exception as e:
+                    self.logger.error(f"处理导入语句时出错: {str(e)}")
+                    continue
+            
+            # 将包名添加到导入信息中
+            imports['__package__'] = package_name
+            self.import_cache[normalized_path] = imports
+            
+            # 获取所有字段的类型信息
+            field_types = {}
+            for _, field_decl in tree.filter(javalang.tree.FieldDeclaration):
+                field_type = field_decl.type.name
+                # 如果字段类型在导入中有对应的完整类名，使用完整类名
+                if field_type in imports:
+                    field_type = imports[field_type]
+                elif '.' not in field_type and package_name:
+                    # 如果是同包的类，添加包名
+                    field_type = f"{package_name}.{field_type}"
                 
-                self.logger.debug(f"处理类: {qualified_name}")
+                for var_decl in field_decl.declarators:
+                    field_types[var_decl.name] = field_type
+                    self.logger.debug(f"添加字段类型: {var_decl.name} -> {field_type}")
+            
+            # 获取所有局部变量的类型信息
+            local_vars = {}
+            for _, method_decl in tree.filter(javalang.tree.MethodDeclaration):
+                method_local_vars = {}
+                
+                # 处理方法参数
+                if method_decl.parameters:
+                    for param in method_decl.parameters:
+                        param_type = param.type.name
+                        if param_type in imports:
+                            param_type = imports[param_type]
+                        method_local_vars[param.name] = param_type
+                        
+                # 处理局部变量声明
+                for _, var_decl in method_decl.filter(javalang.tree.LocalVariableDeclaration):
+                    var_type = var_decl.type.name
+                    if var_type in imports:
+                        var_type = imports[var_type]
+                    for declarator in var_decl.declarators:
+                        method_local_vars[declarator.name] = var_type
+                        
+                local_vars[method_decl.name] = method_local_vars
+            
+            # 处理所有类型声明
+            for path, type_decl in tree.filter(javalang.tree.ClassDeclaration):
+                type_name = type_decl.name
+                qualified_name = f"{package_name}.{type_name}"
+                
+                # 添加类型信息到索引
+                type_info = {
+                    'file_path': normalized_path,
+                    'package': package_name,
+                    'name': type_name,
+                    'type': 'class',
+                    'methods': {},
+                    'imports': imports  # 保存导入信息
+                }
+                self.method_index[qualified_name] = type_info
+                
+                self.logger.debug(f"添加类型到索引: {qualified_name}")
+                self.logger.debug(f"类型信息: {type_info}")
                 
                 # 处理构造函数
                 for constructor in type_decl.constructors:
@@ -323,213 +387,6 @@ class JavaASTExtractor:
         except Exception as e:
             self.logger.error(f"查找节点结束行号时出错: {str(e)}")
             return None
-
-    # def _process_type_declarations(self, tree, type_name, file_path):
-    #     """处理所有类型声明（类、抽象类、接口、枚举）"""
-    #     try:
-    #         processed = False
-            
-    #         # 处理枚举声明
-    #         for path, node in tree.filter(javalang.tree.EnumDeclaration):
-    #             self._process_type_members(node, type_name, file_path, 'enum')
-    #             processed = True
-                
-    #         # 处理类声明（包括抽象类）
-    #         for path, node in tree.filter(javalang.tree.ClassDeclaration):
-    #             # 检查是否是抽象类
-    #             is_abstract = 'abstract' in (node.modifiers or [])
-    #             current_type_name = type_name
-                
-    #             # 如果是内部类，更新类型名
-    #             if len(path) > 1:  # 不是顶级类
-    #                 parent_node = path[-2]
-    #                 if isinstance(parent_node, javalang.tree.ClassDeclaration):
-    #                     current_type_name = f"{type_name}.{node.name}"
-                
-    #             self._process_type_members(node, current_type_name, file_path, 
-    #                                     'abstract_class' if is_abstract else 'class')
-    #             processed = True
-                
-    #             # 处理匿名内部类
-    #             self._process_anonymous_classes(node, current_type_name, file_path)
-                
-    #             # 处理内部类的内部类（递归）
-    #             if hasattr(node.body, 'types'):
-    #                 for inner_type in node.body.types:
-    #                     inner_type_name = f"{current_type_name}.{inner_type.name}"
-    #                     if isinstance(inner_type, javalang.tree.ClassDeclaration):
-    #                         inner_is_abstract = 'abstract' in (inner_type.modifiers or [])
-    #                         self._process_type_members(inner_type, inner_type_name, file_path, 
-    #                                                 'abstract_class' if inner_is_abstract else 'class')
-            
-    #         # 处理接口声明
-    #         for path, node in tree.filter(javalang.tree.InterfaceDeclaration):
-    #             self._process_type_members(node, type_name, file_path, 'interface')
-    #             processed = True
-                
-    #         if not processed:
-    #             self.logger.warning(f"未找到任何类型声明: {file_path}")
-                
-    #     except Exception as e:
-    #         self.logger.error(f"处理类型声明时出错: {str(e)}")
-    #         raise
-
-    # def _process_anonymous_classes(self, node, parent_type_name, file_path):
-    #     """处理匿名内部类"""
-    #     try:
-    #         # 遍历所有字段声明
-    #         if hasattr(node.body, 'fields'):
-    #             for field in node.body.fields:
-    #                 if field.declarators:
-    #                     for declarator in field.declarators:
-    #                         if hasattr(declarator, 'initializer') and isinstance(declarator.initializer, javalang.tree.ClassCreator):
-    #                             # 这是一个匿名内部类
-    #                             anonymous_class = declarator.initializer
-    #                             field_name = declarator.name
-    #                             anonymous_type_name = f"{parent_type_name}.{field_name}"
-                                
-    #                             # 处理匿名内部类的方法
-    #                             if hasattr(anonymous_class.body, 'methods'):
-    #                                 for method in anonymous_class.body.methods:
-    #                                     self._add_method_to_index(method, anonymous_type_name, file_path, 'method')
-                                        
-    #         # 遍历所有方法声明，查找方法体中的匿名类
-    #         if hasattr(node.body, 'methods'):
-    #             for method in node.body.methods:
-    #                 self._process_method_anonymous_classes(method, parent_type_name, file_path)
-                
-    #     except Exception as e:
-    #         self.logger.error(f"处理匿名内部类时出错: {str(e)}")
-    #         raise
-
-    # def _process_method_anonymous_classes(self, method_node, parent_type_name, file_path):
-    #     """处理方法中的匿名内部类"""
-    #     try:
-    #         method_name = method_node.name
-            
-    #         # 遍历方法体中的所有类创建表达式
-    #         for path, node in method_node.filter(javalang.tree.ClassCreator):
-    #             if hasattr(node, 'body') and node.body:
-    #                 # 生成唯一的匿名类名
-    #                 anonymous_type_name = f"{parent_type_name}.{method_name}$Anonymous{self._get_anonymous_class_count()}"
-                    
-    #                 # 处理匿名类的方法
-    #                 if hasattr(node.body, 'methods'):
-    #                     for method in node.body.methods:
-    #                         self._add_method_to_index(method, anonymous_type_name, file_path, 'method')
-                            
-    #     except Exception as e:
-    #         self.logger.error(f"处理方法中的匿名内部类时出错: {str(e)}")
-    #         raise
-
-    # def _get_anonymous_class_count(self):
-    #     """获取并递增匿名类计数器"""
-    #     if not hasattr(self, '_anonymous_class_counter'):
-    #         self._anonymous_class_counter = 0
-    #     self._anonymous_class_counter += 1
-    #     return self._anonymous_class_counter
-
-    # def _process_type_members(self, node, type_name, file_path, type_kind):
-    #     """处理类型成员（方法、字段等）"""
-    #     try:
-    #         # 记录类型信息
-    #         type_info = {
-    #             'kind': type_kind,
-    #             'modifiers': set(node.modifiers) if hasattr(node, 'modifiers') else set(),
-    #             'superclass': None,
-    #             'interfaces': [],
-    #             'file_path': file_path,
-    #             'inner_classes': []
-    #         }
-
-    #         # 处理继承关系
-    #         if hasattr(node, 'extends') and node.extends:
-    #             if isinstance(node.extends, list):
-    #                 # 接口可以继承多个接口
-    #                 type_info['interfaces'] = [self._get_type_name(ext) for ext in node.extends]
-    #             else:
-    #                 # 类只能继承一个父类
-    #                 type_info['superclass'] = self._get_type_name(node.extends)
-
-    #         # 处理接口实现
-    #         if hasattr(node, 'implements') and node.implements:
-    #             type_info['interfaces'].extend(self._get_type_name(impl) for impl in node.implements)
-
-    #         self.class_cache[type_name] = type_info
-            
-    #         # 处理内部类
-    #         if hasattr(node.body, 'types'):
-    #             for inner_type in node.body.types:
-    #                 inner_type_name = f"{type_name}.{inner_type.name}"
-    #                 type_info['inner_classes'].append(inner_type_name)
-            
-    #         # 处理所有方法声明（包括抽象方法）
-    #         if hasattr(node.body, 'methods'):
-    #             for method in node.body.methods:
-    #                 method_type = 'abstract_method' if 'abstract' in (method.modifiers or []) else 'method'
-    #                 if 'static' in (method.modifiers or []):
-    #                     method_type = 'static_method'
-    #                 self._add_method_to_index(method, type_name, file_path, method_type)
-            
-    #         # 处理构造函数
-    #         if hasattr(node.body, 'constructors'):
-    #             for constructor in node.body.constructors:
-    #                 self._add_method_to_index(constructor, type_name, file_path, 'constructor')
-                
-    #         # 处理字段声明
-    #         if hasattr(node.body, 'fields'):
-    #             for field in node.body.fields:
-    #                 field_type = self._get_type_name(field.type)
-    #                 for declarator in field.declarators:
-    #                     self.field_types[f"{type_name}.{declarator.name}"] = field_type
-            
-    #         # 处理静态初始化块
-    #         if hasattr(node.body, 'initializers'):
-    #             for initializer in node.body.initializers:
-    #                 if 'static' in (initializer.modifiers or []):
-    #                     self._add_method_to_index(initializer, type_name, file_path, 'static_initializer')
-                
-    #         # 处理枚举常量
-    #         if type_kind == 'enum' and hasattr(node.body, 'enumConstants'):
-    #             for constant in node.body.enumConstants:
-    #                 self._add_enum_constant_to_index(constant, type_name, file_path)
-            
-    #     except Exception as e:
-    #         self.logger.error(f"处理类型成员时出错: {str(e)}")
-    #         raise
-
-    # def _add_enum_constant_to_index(self, constant, type_name, file_path):
-    #     """添加枚举常量到索引"""
-    #     try:
-    #         constant_name = constant.name
-    #         qualified_name = f"{type_name}.{constant_name}"
-            
-    #         # 记录枚举常量信息
-    #         constant_info = {
-    #             'name': constant_name,
-    #             'type': type_name,
-    #             'kind': 'enum_constant',
-    #             'file_path': file_path,
-    #             'arguments': [],
-    #             'start_line': constant.position.line if constant.position else None
-    #         }
-            
-    #         # 处理枚举常量的构造函数参数
-    #         if hasattr(constant, 'arguments') and constant.arguments:
-    #             constant_info['arguments'] = [
-    #                 {
-    #                     'value': arg.value if hasattr(arg, 'value') else str(arg),
-    #                     'type': self._get_expression_type(arg) if hasattr(self, '_get_expression_type') else None
-    #                 }
-    #                 for arg in constant.arguments
-    #             ]
-            
-    #         self.enum_constants[qualified_name] = constant_info
-    #         self.logger.debug(f"添加枚举常量到索引: {qualified_name}")
-            
-    #     except Exception as e:
-    #         self.logger.error(f"添加枚举常量到索引时出错: {str(e)}")
-    #         raise
 
     def _get_type_name(self, type_node):
         """获取类型的完整名称"""
@@ -829,7 +686,7 @@ class JavaASTExtractor:
                     caller_method = f"{current_type}.{method_decl.name}"
                     
                     # 获取被调用方法的完整限定名
-                    callee = self._resolve_method_call(node, current_type, field_types)
+                    callee = self._resolve_method_call(node, current_type, field_types, self._get_cached_imports(file_path))
                     
                     if callee:
                         self.logger.debug(f"尝试添加调用关系: {caller_method} -> {callee}")
@@ -917,120 +774,64 @@ class JavaASTExtractor:
             import traceback
             self.logger.error(traceback.format_exc())
 
-    # def _is_stdlib_call(self, qualified_name):
-    #     """判断是否是标准库调用"""
-    #     if not qualified_name:
-    #         return False
-    #     return any(qualified_name.startswith(prefix) for prefix in self.stdlib_prefixes)
 
-    # def _normalize_class_name(self, name):
-    #     """规范化类名和包名"""
-    #     if not name:
-    #         return name
-            
-    #     # 如果是简单的字段引用（如srcImg.createGraphics），不处理
-    #     if '.' in name and len(name.split('.')) == 2:
-    #         return name
-            
-    #     # 如果已经是正确格式，直接返回
-    #     if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$', name):
-    #         return name
-            
-    #     # 移除字母之间的点号
-    #     normalized = re.sub(r'([a-zA-Z])\.([a-zA-Z])', r'\1\2', name)
-    #     # 替换多个点号为单个点号
-    #     normalized = re.sub(r'\.+', '.', normalized)
-    #     # 移除首尾的点号
-    #     normalized = normalized.strip('.')
-        
-    #     return normalized
-
-    def _resolve_method_call(self, node, current_type, field_types):
-        """解析方法调用，返回完整的方法调用路径"""
+    def _resolve_method_call(self, node, current_type, field_types, imports):
         try:
             member = node.member
             qualifier = node.qualifier
             
-            # 打印详细的调试信息
+            # 检查是否是要排除的通用方法
+            if member in self.exclude_methods:
+                self.logger.debug(f"跳过通用方法: {member}")
+                return None
+            
             self.logger.debug(f"\n调试信息:")
             self.logger.debug(f"当前类型: {current_type}")
             self.logger.debug(f"方法成员: {member}")
             self.logger.debug(f"限定符: {qualifier}")
             self.logger.debug(f"限定符类型: {type(qualifier)}")
+            self.logger.debug(f"字段类型映射: {field_types}")
+            self.logger.debug(f"导入信息: {imports}")
             
-            # 检查当前类型是否有效
-            if not current_type:
-                self.logger.warning(f"无法获取当前类型: {file_path}")
-                return None
-            
-            # 检查当前类型下是否有任何方法
-            class_methods = [m for m in self.method_index.keys() if m.startswith(f"{current_type}.")]
-            if not class_methods:
-                self.logger.warning(f"当前类型 {current_type} 没有任何已索引的方法")
-                # 不应该直接返回None，因为可能是新添加的类
-                # 继续处理以捕获可能的方法调用
-
-            # 获取当前文件的导入信息
-            try:
-                file_path = self.method_index[current_type]['file_path']
-                imports = self._get_cached_imports(file_path)
-                self.logger.debug(f"文件路径: {file_path}")
-                self.logger.debug(f"导入信息: {imports}")
-            except KeyError:
-                self.logger.warning(f"无法获取类型 {current_type} 的文件路径")
-                return None
-            
-            # 初始化返回值
             callee = None
             
-            if qualifier is None:
-                # 如果没有限定符，是当前类型的方法调用
-                callee = f"{current_type}.{member}"
-                self.logger.debug(f"无限定符调用: {callee}")
-                
-            elif isinstance(qualifier, javalang.tree.MemberReference):
-                # 处理字段引用
-                field_name = qualifier.member
-                self.logger.debug(f"字段名: {field_name}")
-                self.logger.debug(f"字段类型映射: {field_types}")
-                
-                if field_name in field_types:
-                    field_type = field_types[field_name]
+            if isinstance(qualifier, str):
+                self.logger.debug(f"字符串限定符: {qualifier}")
+                if qualifier in field_types:
+                    # 使用字段的声明类型
+                    field_type = field_types[qualifier]
+                    # 如果字段类型在导入中有对应的完整类名，使用完整类名
                     if field_type in imports:
                         callee = f"{imports[field_type]}.{member}"
+                        self.logger.debug(f"字段类型调用(从导入): {callee}")
                     else:
                         callee = f"{field_type}.{member}"
-                    self.logger.debug(f"字段类型调用: {callee}")
-                else:
-                    if field_name in imports:
-                        callee = f"{imports[field_name]}.{member}"
-                    else:
-                        current_package = current_type.rsplit('.', 1)[0]
-                        callee = f"{current_package}.{field_name}.{member}"
-                    self.logger.debug(f"字段引用调用: {callee}")
-                        
-            elif isinstance(qualifier, str):
-                self.logger.debug(f"字符串限定符: {qualifier}")
-                if qualifier in imports:
+                        self.logger.debug(f"字段类型调用(原始): {callee}")
+                elif qualifier in imports:
                     callee = f"{imports[qualifier]}.{member}"
                     self.logger.debug(f"导入类型调用: {callee}")
                 elif '.' in qualifier:
-                    # 已经是完整的限定名
+                    # 已经是完整限定名
                     callee = f"{qualifier}.{member}"
                     self.logger.debug(f"完整限定名调用: {callee}")
                 else:
-                    # 尝试在当前包中查找
+                    # 在同包中查找
                     current_package = current_type.rsplit('.', 1)[0]
                     callee = f"{current_package}.{qualifier}.{member}"
                     self.logger.debug(f"同包调用: {callee}")
             
-            # 规范化调用路径
+            # 在返回之前检查是否是标准库调用
             if callee:
-                # 移除多余的点号
+                # 检查是否是要排除的包
+                if any(callee.startswith(prefix) for prefix in self.exclude_prefixes):
+                    self.logger.debug(f"跳过标准库调用: {callee}")
+                    return None
+                
+                # 移除多余的点号并返回
                 callee = re.sub(r'\.+', '.', callee)
                 callee = callee.strip('.')
-                self.logger.debug(f"最终调用路径: {callee}")
-                
+                self.logger.debug(f"保留调用: {callee}")
+            
             return callee
 
         except Exception as e:
@@ -1039,7 +840,6 @@ class JavaASTExtractor:
             self.logger.error(f"异常信息: {str(e)}")
             self.logger.error(f"当前类型: {current_type}")
             self.logger.error(f"节点信息: {vars(node)}")
-            # 改为返回None而不是退出程序
             return None
 
     def analyze_file(self, file_path, modified_lines):
@@ -1331,51 +1131,9 @@ class JavaASTExtractor:
                     if result is not None:
                         return result
             return None
-            
+                
         # 从AST根节点开始搜索
         return find_parent(self.ast_data, node)
-
-    # def _resolve_class_name(self, qualifier, file_path):
-    #     """解析完整的类名"""
-    #     cache_key = f"{file_path}:{qualifier}"
-    #     if cache_key in self.class_cache:
-    #         return self.class_cache[cache_key]
-
-    #     try:
-    #         # 获取当前类型的AST
-    #         with open(os.path.join(self.src_root, file_path), 'r', encoding='utf-8') as f:
-    #             tree = javalang.parse.parse(f.read())
-
-    #         # 查找字段声明
-    #         for _, node in tree.filter(javalang.tree.FieldDeclaration):
-    #             for declarator in node.declarators:
-    #                 if declarator.name == qualifier:
-    #                     # 获取字段类型
-    #                     field_type = node.type.name
-    #                     # 解析完整的类型名称
-    #                     imports = self._get_cached_imports(file_path)
-    #                     if field_type in imports:
-    #                         result = imports[field_type]
-    #                         self.class_cache[cache_key] = result
-    #                         return result
-
-    #         # 如果在字段中没找到，按原来的逻辑继续处理
-    #         imports = self._get_cached_imports(file_path)
-    #         if qualifier in imports:
-    #             result = imports[qualifier]
-    #         else:
-    #             package_name = self._get_cached_package(file_path)
-    #             if package_name and '.' not in qualifier:
-    #                 result = f"{package_name}.{qualifier}"
-    #             else:
-    #                 result = qualifier
-
-    #         self.class_cache[cache_key] = result
-    #         return result
-
-    #     except Exception as e:
-    #         self.logger.debug(f"解析类名时出错 ({qualifier} in {file_path}): {e}")
-    #         return None
 
     def _get_cached_imports(self, file_path):
         """获取缓存的导入信息
@@ -1388,35 +1146,24 @@ class JavaASTExtractor:
         """
         if file_path not in self.import_cache:
             try:
-                imports = {}
-                
-                # 解析文件获取导入信息
-                with open(os.path.join(self.src_root, file_path), 'r', encoding='utf-8') as f:
-                    tree = javalang.parse.parse(f.read())
-                
-                # 获取包名
-                package_name = None
-                for _, node in tree.filter(javalang.tree.PackageDeclaration):
-                    if isinstance(node.name, list):
-                        package_name = '.'.join(str(n.value) for n in node.name if hasattr(n, 'value'))
-                    else:
-                        package_name = str(node.name)
-                    break
-                
-                # 处理导入语句
-                for _, node in tree.filter(javalang.tree.Import):
-                    if node.path:
-                        # 获取完整的导入路径
-                        import_path = '.'.join(str(p) for p in node.path)
-                        # 获取简单类名
-                        simple_name = str(node.path[-1])
-                        imports[simple_name] = import_path
-                
-                # 保存包名，用于解析同包下的类引用
-                if package_name:
-                    imports['__package__'] = package_name
+                # 从method_index中获取类型信息
+                found_types = [t for t in self.method_index.items() if t[1].get('file_path') == file_path]
+                if not found_types:
+                    self.logger.warning(f"找不到文件对应的类型信息: {file_path}")
+                    return {}
                     
+                # 使用第一个找到的类型的包名和导入信息
+                type_info = found_types[0][1]
+                package_name = type_info.get('package')
+                imports = type_info.get('imports', {})
+                
+                # 合并包名和导入信息
+                imports.update({
+                    '__package__': package_name  # 存储包名用于同包引用
+                })
+                
                 self.import_cache[file_path] = imports
+                self.logger.debug(f"已缓存导入信息: {file_path} -> {imports}")
                 
             except Exception as e:
                 self.logger.error(f"处理导入信息时出错 {file_path}: {str(e)}")
@@ -1519,7 +1266,7 @@ class JavaASTExtractor:
             # 获取方法名
             name = method_node.name
             
-            # 处理参数
+            # 获取参数
             params = []
             if hasattr(method_node, 'parameters') and method_node.parameters:
                 for param in method_node.parameters:

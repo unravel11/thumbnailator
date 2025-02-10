@@ -143,4 +143,4 @@ public abstract class AbstractProcessor {
             self.logger.removeHandler(handler)
 
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main() 
