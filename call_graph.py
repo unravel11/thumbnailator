@@ -23,6 +23,11 @@ class CallGraph:
             # 将 modifiers 集合转换为列表
             modifiers = list(method_info.get('modifiers', set())) if isinstance(method_info.get('modifiers'), set) else method_info.get('modifiers', [])
             
+            # 确保获取 signature
+            signature = method_info.get('signature')
+            if not signature:  # 如果 signature 为空，尝试构建一个基本的签名
+                signature = f"{' '.join(modifiers)} {method_info['name']}()"
+            
             self.nodes[qualified_name] = {
                 'name': method_info['name'],
                 'qualified_name': qualified_name,
@@ -31,8 +36,8 @@ class CallGraph:
                 'start_line': method_info.get('start_line'),
                 'end_line': method_info.get('end_line'),
                 'type': method_info['type'],
-                'modifiers': modifiers,  # 使用转换后的列表
-                'signature': method_info.get('signature', '')
+                'modifiers': modifiers,
+                'signature': signature  # 使用获取到的或构建的签名
             }
             # 确保方法在 edges 中有一个入口
             if qualified_name not in self.edges:
@@ -45,43 +50,92 @@ class CallGraph:
             self.logger.error(f"添加方法时出错 {qualified_name}: {str(e)}")
 
     def add_call(self, caller, callee):
-        """添加调用关系（双向）
+        """添加方法调用关系
         
         Args:
             caller: 调用方法的完整限定名
             callee: 被调用方法的完整限定名
         """
         try:
-            # 参数验证
-            if not caller or not callee:
-                self.logger.warning(f"跳过无效的调用关系: {caller} -> {callee}")
+            # 检查是否是标准库调用
+            exclude_prefixes = {
+                'java.',
+                'javax.',
+                'sun.',
+                'com.sun.',
+                'org.w3c.',
+                'org.xml.',
+                'org.ietf.',
+                'org.omg.',
+                'org.jcp.',
+                'android.',
+            }
+            
+            # 如果调用者或被调用者是标准库方法，则跳过
+            if any(caller.startswith(prefix) for prefix in exclude_prefixes) or \
+               any(callee.startswith(prefix) for prefix in exclude_prefixes):
                 return
             
-            # 规范化方法名（移除多余的点号）
-            caller = caller.strip('.')
-            callee = callee.strip('.')
-            
-            # 验证方法名格式
-            if not self._is_valid_method_name(caller) or not self._is_valid_method_name(callee):
-                self.logger.warning(f"跳过格式无效的调用关系: {caller} -> {callee}")
+            # 定义常见的Java标准库类型和方法
+            common_java_types = {
+                # 基础类型
+                'Object', 'String', 'Integer', 'Long', 'Double', 'Float', 'Boolean', 'Byte', 'Short', 'Character',
+                
+                # 异常类型
+                'Exception', 'RuntimeException', 'IllegalArgumentException', 'NullPointerException',
+                'IllegalStateException', 'UnsupportedOperationException', 'IndexOutOfBoundsException',
+                'NoSuchElementException', 'ClassCastException', 'ArrayIndexOutOfBoundsException',
+                
+                # 集合类型
+                'List', 'ArrayList', 'LinkedList', 'Set', 'HashSet', 'Map', 'HashMap', 'TreeMap',
+                'Collection', 'Collections', 'Arrays', 'Iterator', 'Iterable',
+                
+                # 其他常用类型
+                'StringBuilder', 'StringBuffer', 'Math', 'System', 'Class', 'Thread', 'Runnable',
+                'Optional', 'Stream', 'Collectors', 'Objects', 'PrintStream', 'PrintWriter',
+                'Console', 'Scanner', 'Random', 'Date', 'Calendar', 'TimeZone'
+            }
+
+            # 定义标准库方法调用模式
+            standard_method_patterns = {
+                'System.out', 'System.err', 'System.in',
+                'System.currentTimeMillis', 'System.nanoTime',
+                'System.arraycopy', 'System.getProperty',
+                'System.setProperty', 'System.getenv'
+            }
+
+            # 检查是否是标准库方法调用
+            def is_standard_library_call(method_name):
+                # 检查完整的方法调用模式
+                if any(method_name.startswith(pattern) for pattern in standard_method_patterns):
+                    return True
+                # 检查类型名称
+                return method_name.split('.')[-1] in common_java_types
+
+            # 如果调用者或被调用者是Java标准库类型或标准库方法，则跳过
+            if is_standard_library_call(caller) or is_standard_library_call(callee):
                 return
             
-            self.logger.debug(f"添加调用关系: {caller} -> {callee}")
-            
-            # 确保两个方法都在图中
+            # 初始化调用者节点
             if caller not in self.edges:
-                self.edges[caller] = {'callers': set(), 'callees': set()}
+                self.edges[caller] = {
+                    'callers': set(),  # 调用这个方法的方法集合
+                    'callees': set()   # 这个方法调用的其他方法集合
+                }
+            
+            # 初始化被调用者节点
             if callee not in self.edges:
-                self.edges[callee] = {'callers': set(), 'callees': set()}
+                self.edges[callee] = {
+                    'callers': set(),
+                    'callees': set()
+                }
             
-            # 建立双向关系
-            self.edges[caller]['callees'].add(callee)  # caller 调用了 callee
-            self.edges[callee]['callers'].add(caller)  # callee 被 caller 调用
-            
-            self.logger.debug(f"当前调用关系总数: {sum(len(e['callees']) for e in self.edges.values())}")
+            # 添加调用关系
+            self.edges[caller]['callees'].add(callee)
+            self.edges[callee]['callers'].add(caller)
             
         except Exception as e:
-            self.logger.error(f"添加调用关系时出错 ({caller} -> {callee}): {str(e)}")
+            print(f"添加调用关系时出错: {str(e)}")
 
     def _is_valid_method_name(self, method_name):
         """验证方法名格式是否有效

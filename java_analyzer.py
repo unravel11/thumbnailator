@@ -4,6 +4,7 @@ import logging
 import os
 import datetime
 import argparse
+import sys
 from ast_extractor import JavaASTExtractor
 
 class JavaChangeAnalyzer:
@@ -27,29 +28,30 @@ class JavaChangeAnalyzer:
 
     def _setup_logger(self):
         """配置日志记录器"""
-        # 创建logger
         logger = logging.getLogger('JavaAnalyzer')
         logger.setLevel(logging.DEBUG)
-
+        
         # 创建日志文件处理器
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = os.path.join(self.output_dir, f'java_analysis_{timestamp}.log')
         file_handler = logging.FileHandler(log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-
+        file_handler.setLevel(logging.DEBUG)  # 文件始终记录DEBUG级别
+        
         # 创建控制台处理器
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
+        # 根据命令行参数设置控制台日志级别
+        console_level = logging.DEBUG if '--debug' in sys.argv else logging.INFO
+        console_handler.setLevel(console_level)
+        
         # 创建格式化器
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(formatter)
         console_handler.setFormatter(formatter)
-
+        
         # 添加处理器到logger
         logger.addHandler(file_handler)
         logger.addHandler(console_handler)
-
+        
         return logger
 
     def analyze_diff(self, diff_text):
@@ -147,104 +149,128 @@ def main():
     # 设置日志级别
     log_level = logging.DEBUG if args.debug else logging.INFO
     logging.getLogger('JavaAnalyzer').setLevel(log_level)
-
-    diff_text = """diff --git src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
-index d766fa5..34cd875 100644
---- src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
-+++ dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
-@@ -85,31 +85,33 @@ public final class Colorize implements ImageFilter {
-                  "Specified alpha value is outside the range of allowed " +
-                  "values.");
-      }
-        
-      int r = c.getRed();
-      int g = c.getGreen();
-      int b = c.getBlue();
-      int a = alpha;
-        
-      this.c = new Color(r, g, b, a);
-+     System.out.println("Colorize: " + this.c);
-  }
     
-  public BufferedImage apply(BufferedImage img) {
-      int width = img.getWidth();
-      int height = img.getHeight();
-        
-      BufferedImage newImage = new BufferedImageBuilder(width, height).build();
-        
-      Graphics2D g = newImage.createGraphics();
-      g.drawImage(img, 0, 0, null);
-      g.setColor(c);
-      g.fillRect(0, 0, width, height);
-      g.dispose();
- 
-      if (img.getType() != newImage.getType()) {
-          return BufferedImages.copy(newImage, img.getType());
-      }
--
-+     System.out.println("Colorize: " + newImage);
-      return newImage;
-  }
- }
-+
-diff --git src://src/main/java/net/coobird/thumbnailator/filters/Flip.java dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
-index 98d5432..eaed0f5 100644
---- src://src/main/java/net/coobird/thumbnailator/filters/Flip.java
-+++ dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
-@@ -44,21 +44,21 @@ public class Flip {
-      public BufferedImage apply(BufferedImage img) {
-          int width = img.getWidth();
-          int height = img.getHeight();
-            
-          BufferedImage newImage =
-                  new BufferedImageBuilder(width, height, img.getType()).build();
-            
-          Graphics g = newImage.getGraphics();
-          g.drawImage(img, width, 0, 0, height, 0, 0, width, height, null);
-          g.dispose();
--         
-+            System.err.println("Flip.HORIZONTAL.apply(BufferedImage img) called");
-          return newImage;
-      }
-  };
-    
-  /**
-   * An image filter which performs a vertical flip of the image.
-   */
-  public static final ImageFilter VERTICAL = new ImageFilter() {
-      public BufferedImage apply(BufferedImage img) {
-    """
-
-
-#     # diff文本示例
-#     diff_text = """diff --git src://src/main/java/com/example/service/UserService.java dst://src/main/java/com/example/service/UserService.java
-# index a123456..b789012 100644
-# --- src://src/main/java/com/example/service/UserService.java
-# +++ dst://src/main/java/com/example/service/UserService.java
-# @@ -12,6 +12,7 @@ public class UserService {
-#      public User createUser(String name, String email) {
-#          logUtil.info("Creating new user: " + name);
-# +        logUtil.debug("Validating email: " + email);
-         
-#          if (!validationUtil.validateEmail(email)) {
-#              logUtil.error("Invalid email: " + email);
-# @@ -25,6 +26,7 @@ public class UserService {
-#      public void updateUser(Long id, String name) {
-#          User user = userRepository.findById(id);
-# +        validationUtil.validateName(name);
-#          user.setName(name);
-#          userRepository.save(user);
-#          logUtil.info("User updated: " + id);
-# diff --git src://src/main/java/com/example/util/ValidationUtil.java dst://src/main/java/com/example/util/ValidationUtil.java
-# index 1234567..89abcdef 100644
-# --- src://src/main/java/com/example/util/ValidationUtil.java
-# +++ dst://src/main/java/com/example/util/ValidationUtil.java
-# @@ -3,4 +3,5 @@ public class ValidationUtil {
-#      public boolean validateEmail(String email) {
-# +        System.err.println("Validating email: " + email);
-#          return email != null && email.contains("@");
+#     diff_text = """diff --git src://src/main/java/quick/pager/shop/handler/AbstractHandler.java dst://src/main/java/quick/pager/shop/handler/AbstractHandler.java
+# index d766fa5..34cd875 100644
+# --- src://src/main/java/quick/pager/shop/handler/AbstractHandler.java
+# +++ dst://src/main/java/quick/pager/shop/handler/AbstractHandler.java
+# @@ -26,7 +26,7 @@ public abstract class AbstractHandler implements IHandler {
+#          jobLog.setExecutorServiceName(jobInfo.getServiceName());
+#          jobLog.setExecutorServiceMethod(jobInfo.getServiceMethod());
+#          jobLog.setExecutorParam(executorsParam);
+# -        jobLog.setHandleTime(LocalDateTime.now());
+# +        System.out.println("Pre log handle time: " + LocalDateTime.now());
+#          jobLogMapper.insert(jobLog);
+#          return jobLog.getId();
 #      }
-#  }"""
+# @@ -36,7 +36,7 @@ public abstract class AbstractHandler implements IHandler {
+#          JobLogMapper jobLogMapper = ShopSpringContext.getBean(JobLogMapper.class);
+#          JobLog updateJobLog = new JobLog();
+#          updateJobLog.setId(jobLogId);
+# -        updateJobLog.setHandleStatus(1);
+# +        System.out.println("Post log handle status: " + 1);
+#          updateJobLog.setHandleTime(LocalDateTime.now());
+#          jobLogMapper.updateById(updateJobLog);
+#      }
+#      """
+
+#     diff_text = """diff --git src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
+# index d766fa5..34cd875 100644
+# --- src://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
+# +++ dst://src/main/java/net/coobird/thumbnailator/filters/Colorize.java
+# @@ -85,31 +85,33 @@ public final class Colorize implements ImageFilter {
+#                   "Specified alpha value is outside the range of allowed " +
+#                   "values.");
+#       }
+        
+#       int r = c.getRed();
+#       int g = c.getGreen();
+#       int b = c.getBlue();
+#       int a = alpha;
+        
+#       this.c = new Color(r, g, b, a);
+# +     System.out.println("Colorize: " + this.c);
+#   }
+    
+#   public BufferedImage apply(BufferedImage img) {
+#       int width = img.getWidth();
+#       int height = img.getHeight();
+        
+#       BufferedImage newImage = new BufferedImageBuilder(width, height).build();
+        
+#       Graphics2D g = newImage.createGraphics();
+#       g.drawImage(img, 0, 0, null);
+#       g.setColor(c);
+#       g.fillRect(0, 0, width, height);
+#       g.dispose();
+ 
+#       if (img.getType() != newImage.getType()) {
+#           return BufferedImages.copy(newImage, img.getType());
+#       }
+# -
+# +     System.out.println("Colorize: " + newImage);
+#       return newImage;
+#   }
+#  }
+# +
+# diff --git src://src/main/java/net/coobird/thumbnailator/filters/Flip.java dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
+# index 98d5432..eaed0f5 100644
+# --- src://src/main/java/net/coobird/thumbnailator/filters/Flip.java
+# +++ dst://src/main/java/net/coobird/thumbnailator/filters/Flip.java
+# @@ -44,21 +44,21 @@ public class Flip {
+#       public BufferedImage apply(BufferedImage img) {
+#           int width = img.getWidth();
+#           int height = img.getHeight();
+            
+#           BufferedImage newImage =
+#                   new BufferedImageBuilder(width, height, img.getType()).build();
+            
+#           Graphics g = newImage.getGraphics();
+#           g.drawImage(img, width, 0, 0, height, 0, 0, width, height, null);
+#           g.dispose();
+# -         
+# +            System.err.println("Flip.HORIZONTAL.apply(BufferedImage img) called");
+#           return newImage;
+#       }
+#   };
+    
+#   /**
+#    * An image filter which performs a vertical flip of the image.
+#    */
+#   public static final ImageFilter VERTICAL = new ImageFilter() {
+#       public BufferedImage apply(BufferedImage img) {
+#     """
+
+
+    # diff文本示例
+    diff_text = """diff --git src://src/main/java/com/example/service/UserService.java dst://src/main/java/com/example/service/UserService.java
+index a123456..b789012 100644
+--- src://src/main/java/com/example/service/UserService.java
++++ dst://src/main/java/com/example/service/UserService.java
+@@ -12,6 +12,7 @@ public class UserService {
+     public User createUser(String name, String email) {
+         logUtil.info("Creating new user: " + name);
++        logUtil.debug("Validating email: " + email);
+         
+         if (!validationUtil.validateEmail(email)) {
+             logUtil.error("Invalid email: " + email);
+@@ -25,6 +26,7 @@ public class UserService {
+     public void updateUser(Long id, String name) {
+         User user = userRepository.findById(id);
++        validationUtil.validateName(name);
+         user.setName(name);
+         userRepository.save(user);
+         logUtil.info("User updated: " + id);
+diff --git src://src/main/java/com/example/util/ValidationUtil.java dst://src/main/java/com/example/util/ValidationUtil.java
+index 1234567..89abcdef 100644
+--- src://src/main/java/com/example/util/ValidationUtil.java
++++ dst://src/main/java/com/example/util/ValidationUtil.java
+@@ -3,4 +3,5 @@ public class ValidationUtil {
+     public boolean validateEmail(String email) {
++        System.err.println("Validating email: " + email);
+         return email != null && email.contains("@");
+     }
+ }"""
     
     try:
         # 创建分析器并运行分析

@@ -35,65 +35,9 @@ class JavaASTExtractor:
         self.field_types = {}  # 缓存字段类型
         self.enum_constants = {}  # 新增：存储枚举常量
         
-        # 定义标准库包前缀
-        self.stdlib_prefixes = {
-            'java.',
-            'javax.',
-            'sun.',
-            'com.sun.',
-            'org.w3c.',
-            'org.xml.',
-            'org.ietf.',
-            'org.omg.',
-            'org.jcp.',
-            'android.',  # 如果需要处理Android项目
-        }
-
-        # 定义要排除的包前缀
-        self.exclude_prefixes = {
-            # Java标准库
-            'java.',
-            'javax.',
-            'sun.',
-            'com.sun.',
-        }
-        
-        # 定义要排除的通用方法名
-        self.exclude_methods = {
-            # 迭代器相关
-            'iterator',
-            'hasNext',
-            'next',
-            'remove',
-            'forEach',
-            'stream',
-            'spliterator',
-            'listIterator',
-            
-            # Object类方法
-            'toString',
-            'equals',
-            'hashCode',
-            'getClass',
-            'clone',
-            'notify',
-            'notifyAll',
-            'wait',
-            'finalize',
-            
-            # 集合类通用方法
-            'size',
-            'isEmpty',
-            'contains',
-            'clear',
-            'add',
-            'remove',
-            
-            # 其他常见工具方法
-            'valueOf',
-            'length',
-            'trim'
-        }
+        # 添加新的缓存用于跟踪局部变量
+        self.local_var_types = {}  # 缓存方法内的局部变量类型
+        self.method_local_vars = {}  # 按方法缓存局部变量
 
     def _setup_logger(self):
         """配置日志记录器"""
@@ -165,6 +109,8 @@ class JavaASTExtractor:
         self.call_graph = CallGraph()
         self.field_types = {}
         self.enum_constants = {}
+        self.local_var_types = {}
+        self.method_local_vars = {}
 
     def _get_java_files(self):
         """获取所有Java文件的相对路径"""
@@ -179,7 +125,6 @@ class JavaASTExtractor:
         return java_files
 
     def _process_file(self, file_path):
-        """处理单个文件，提取所有方法信息"""
         try:
             normalized_path = os.path.normpath(file_path)
             full_path = os.path.join(self.src_root, normalized_path)
@@ -202,29 +147,36 @@ class JavaASTExtractor:
                 self.logger.debug(f"包名: {package_name}")
                 break
             
-            # 处理导入语句
+            # 修改导入处理逻辑
+            # 1. 处理显式导入
             for _, node in tree.filter(javalang.tree.Import):
-                try:
-                    if node.path:
-                        # 获取完整的导入路径
-                        if isinstance(node.path, list):
-                            import_parts = []
-                            for part in node.path:
-                                if hasattr(part, 'value'):
-                                    import_parts.append(part.value)
-                                else:
-                                    import_parts.append(str(part))
-                            import_path = '.'.join(import_parts)
+                if node.path:
+                    if isinstance(node.path, list):
+                        import_path = '.'.join(str(p.value) if hasattr(p, 'value') else str(p) for p in node.path)
+                    else:
+                        import_path = str(node.path)
+                    
+                    # 处理静态导入和普通导入
+                    if node.static:
+                        # 静态导入
+                        class_name = '.'.join(import_path.split('.')[:-1])
+                        method_name = import_path.split('.')[-1]
+                        imports[method_name] = {'type': 'static', 'class': class_name, 'member': method_name}
+                    else:
+                        # 普通导入
+                        if '*' in import_path:
+                            # 导入整个包
+                            package = import_path.replace('.*', '')
+                            imports[package] = {'type': 'package', 'package': package}
                         else:
-                            import_path = str(node.path)
-                        
-                        # 获取简单类名（最后一个部分）
-                        simple_name = import_path.split('.')[-1]
-                        imports[simple_name] = import_path
-                        self.logger.debug(f"添加导入: {simple_name} -> {import_path}")
-                except Exception as e:
-                    self.logger.error(f"处理导入语句时出错: {str(e)}")
-                    continue
+                            # 导入具体类
+                            simple_name = import_path.split('.')[-1]
+                            imports[simple_name] = {'type': 'class', 'fqn': import_path}
+                            # 同时保存字符串形式，用于向后兼容
+                            imports[simple_name] = import_path
+
+            # 2. 添加隐式导入
+            imports['java.lang'] = {'type': 'package', 'package': 'java.lang'}
             
             # 将包名添加到导入信息中
             imports['__package__'] = package_name
@@ -232,42 +184,70 @@ class JavaASTExtractor:
             
             # 获取所有字段的类型信息
             field_types = {}
-            for _, field_decl in tree.filter(javalang.tree.FieldDeclaration):
-                field_type = field_decl.type.name
-                # 如果字段类型在导入中有对应的完整类名，使用完整类名
-                if field_type in imports:
-                    field_type = imports[field_type]
-                elif '.' not in field_type and package_name:
-                    # 如果是同包的类，添加包名
-                    field_type = f"{package_name}.{field_type}"
+            for path, field_decl in tree.filter(javalang.tree.FieldDeclaration):
+                # 获取字段类型
+                field_type = self._resolve_type_name(field_decl.type, imports, package_name)
                 
-                for var_decl in field_decl.declarators:
-                    field_types[var_decl.name] = field_type
-                    self.logger.debug(f"添加字段类型: {var_decl.name} -> {field_type}")
+                # 处理每个字段声明
+                for declarator in field_decl.declarators:
+                    field_name = declarator.name
+                    field_types[field_name] = field_type
+                    self.logger.debug(f"添加字段类型: {field_name} -> {field_type}")
+                    
+                    # 如果有初始化器，也处理它
+                    if declarator.initializer:
+                        if isinstance(declarator.initializer, javalang.tree.MethodInvocation):
+                            if (declarator.initializer.arguments and 
+                                isinstance(declarator.initializer.arguments[0], javalang.tree.ClassReference)):
+                                class_ref = declarator.initializer.arguments[0]
+                                creator_type = class_ref.type.name
+                                resolved_type = self._resolve_type_name(creator_type, imports, package_name)
+                                field_types[field_name] = resolved_type
+                                self.logger.debug(f"从工厂方法推断字段类型: {field_name} -> {resolved_type}")
             
-            # 获取所有局部变量的类型信息
-            local_vars = {}
-            for _, method_decl in tree.filter(javalang.tree.MethodDeclaration):
-                method_local_vars = {}
+            # 在处理方法声明之前，先处理所有导入
+            for _, node in tree.filter(javalang.tree.Import):
+                if node.path:
+                    if isinstance(node.path, list):
+                        import_path = '.'.join(str(p.value) if hasattr(p, 'value') else str(p) for p in node.path)
+                    else:
+                        import_path = str(node.path)
+                    simple_name = import_path.split('.')[-1]
+                    imports[simple_name] = import_path
+            
+            # 在处理方法声明之前添加局部变量类型分析
+            for path, method_decl in tree.filter(javalang.tree.MethodDeclaration):
+                # 获取完整的方法名
+                parent_class = self._find_parent_class(path)
+                if not parent_class:
+                    self.logger.warning(f"找不到方法 {method_decl.name} 的父类，跳过处理")
+                    continue
+                
+                # 构建完整的方法名
+                current_type = f"{package_name}.{parent_class.name}"
+                method_name = f"{current_type}.{method_decl.name}"
+                
+                self.logger.debug(f"\n=== 处理方法: {method_name} ===")
+                
+                # 初始化方法的局部变量映射
+                method_vars = {}
                 
                 # 处理方法参数
                 if method_decl.parameters:
                     for param in method_decl.parameters:
-                        param_type = param.type.name
-                        if param_type in imports:
-                            param_type = imports[param_type]
-                        method_local_vars[param.name] = param_type
-                        
-                # 处理局部变量声明
-                for _, var_decl in method_decl.filter(javalang.tree.LocalVariableDeclaration):
-                    var_type = var_decl.type.name
-                    if var_type in imports:
-                        var_type = imports[var_type]
-                    for declarator in var_decl.declarators:
-                        method_local_vars[declarator.name] = var_type
-                        
-                local_vars[method_decl.name] = method_local_vars
-            
+                        param_type = self._resolve_type_name(param.type, imports, package_name)
+                        method_vars[param.name] = param_type
+                        self.logger.debug(f"添加方法参数: {param.name} -> {param_type}")
+                
+                # 处理方法体中的局部变量
+                if method_decl.body:
+                    for statement in method_decl.body:
+                        self._process_statement(statement, method_vars, imports, package_name)
+                
+                # 存储方法的局部变量信息
+                self.method_local_vars[method_name] = method_vars
+                self.logger.debug(f"存储方法局部变量: {method_name} -> {method_vars}")
+
             # 处理所有类型声明
             for path, type_decl in tree.filter(javalang.tree.ClassDeclaration):
                 type_name = type_decl.name
@@ -280,75 +260,23 @@ class JavaASTExtractor:
                     'name': type_name,
                     'type': 'class',
                     'methods': {},
-                    'imports': imports  # 保存导入信息
+                    'imports': imports
                 }
                 self.method_index[qualified_name] = type_info
                 
-                self.logger.debug(f"添加类型到索引: {qualified_name}")
-                self.logger.debug(f"类型信息: {type_info}")
-                
                 # 处理构造函数
                 for constructor in type_decl.constructors:
-                    # 构建构造函数名（包含参数类型）
-                    params = []
-                    if constructor.parameters:
-                        params = [self._get_type_name(param.type) for param in constructor.parameters]
-                    constructor_name = f"{qualified_name}.{type_name}"
-                    if params:
-                        constructor_name += '#' + '#'.join(params)
-                    
-                    # 获取构造函数的位置信息
-                    start_line = constructor.position.line if hasattr(constructor, 'position') and constructor.position else None
-                    end_line = self._find_node_end_line(constructor)
-                    
-                    self.logger.debug(f"构造函数位置: {start_line}-{end_line}")
-                    
-                    method_info = {
-                        'name': type_name,
-                        'file_path': file_path,
-                        'class_name': qualified_name,
-                        'type': 'constructor',
-                        'modifiers': set(constructor.modifiers) if hasattr(constructor, 'modifiers') else set(),
-                        'signature': self._get_method_signature(constructor),
-                        'start_line': start_line,
-                        'end_line': end_line
-                    }
-                    self.method_index[constructor_name] = method_info
-                    self.call_graph.add_method(constructor_name, method_info)
-                    self.logger.debug(f"添加构造函数: {constructor_name}")
+                    self._add_method_to_index(constructor, qualified_name, file_path, 'constructor')
                 
                 # 处理普通方法和抽象方法
                 for method in type_decl.methods:
-                    method_name = f"{qualified_name}.{method.name}"
-                    
-                    # 确定方法类型
                     method_type = 'method'
-                    modifiers = set(method.modifiers) if hasattr(method, 'modifiers') else set()
-                    
-                    if 'abstract' in modifiers:
+                    if 'abstract' in method.modifiers:
                         method_type = 'abstract_method'
-                    elif 'static' in modifiers:
+                    elif 'static' in method.modifiers:
                         method_type = 'static_method'
                     
-                    # 获取方法的位置信息
-                    start_line = method.position.line if hasattr(method, 'position') and method.position else None
-                    end_line = self._find_node_end_line(method)
-                    
-                    self.logger.debug(f"方法位置: {start_line}-{end_line}")
-                    
-                    method_info = {
-                        'name': method.name,
-                        'file_path': file_path,
-                        'class_name': qualified_name,
-                        'type': method_type,
-                        'modifiers': modifiers,
-                        'signature': self._get_method_signature(method),
-                        'start_line': start_line,
-                        'end_line': end_line
-                    }
-                    self.method_index[method_name] = method_info
-                    self.call_graph.add_method(method_name, method_info)
-                    self.logger.debug(f"添加方法: {method_name} ({method_type})")
+                    self._add_method_to_index(method, qualified_name, file_path, method_type)
 
             self.logger.info(f"索引了 {len(self.method_index)} 个方法")
 
@@ -356,6 +284,45 @@ class JavaASTExtractor:
             self.logger.error(f"处理文件时出错 {file_path}: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
+            raise
+
+    def _process_statement(self, statement, method_vars, imports, package_name):
+        """处理语句中的局部变量声明和初始化"""
+        if isinstance(statement, javalang.tree.LocalVariableDeclaration):
+            self.logger.debug(f"\n处理变量声明: {statement}")
+            
+            # 获取变量类型
+            var_type = self._resolve_type_name(statement.type, imports, package_name)
+            
+            for declarator in statement.declarators:
+                if declarator.initializer:
+                    if isinstance(declarator.initializer, javalang.tree.ClassCreator):
+                        # 处理new对象
+                        creator_type = declarator.initializer.type.name
+                        resolved_type = self._resolve_type_name(creator_type, imports, package_name)
+                        method_vars[declarator.name] = resolved_type
+                        self.logger.debug(f"从对象创建推断类型: {declarator.name} -> {resolved_type}")
+                    elif isinstance(declarator.initializer, javalang.tree.MethodInvocation):
+                        # 处理工厂方法
+                        if (declarator.initializer.arguments and 
+                            isinstance(declarator.initializer.arguments[0], javalang.tree.ClassReference)):
+                            class_ref = declarator.initializer.arguments[0]
+                            creator_type = class_ref.type.name
+                            resolved_type = self._resolve_type_name(creator_type, imports, package_name)
+                            method_vars[declarator.name] = resolved_type
+                            self.logger.debug(f"从工厂方法推断类型: {declarator.name} -> {resolved_type}")
+                        else:
+                            method_vars[declarator.name] = var_type
+                            self.logger.debug(f"使用声明类型: {declarator.name} -> {var_type}")
+                else:
+                    method_vars[declarator.name] = var_type
+                    self.logger.debug(f"添加局部变量: {declarator.name} -> {var_type}")
+        
+        # 递归处理语句块
+        if isinstance(statement, javalang.tree.BlockStatement):
+            if hasattr(statement, 'statements') and statement.statements:
+                for stmt in statement.statements:
+                    self._process_statement(stmt, method_vars, imports, package_name)
 
     def _find_node_end_line(self, node):
         """查找节点的结束行号"""
@@ -472,7 +439,8 @@ class JavaASTExtractor:
                 'modifiers': set(node.modifiers) if hasattr(node, 'modifiers') else set(),
                 'parameters': self._get_method_parameters(node),
                 'return_type': self._get_method_return_type(node) if method_type != 'constructor' else None,
-                'throws': list(node.throws) if hasattr(node, 'throws') and node.throws else []
+                'throws': list(node.throws) if hasattr(node, 'throws') and node.throws else [],
+                'signature': self._get_method_signature(node)
             }
             
             self.method_index[qualified_name] = method_info
@@ -512,35 +480,37 @@ class JavaASTExtractor:
         """获取方法的完整签名
         
         Args:
-            node: 方法节点
+            node: javalang.tree.MethodDeclaration 或 javalang.tree.ConstructorDeclaration
             
         Returns:
             str: 方法签名，如 'public static void main(String[] args)'
         """
         try:
             # 获取修饰符
-            modifiers = ' '.join(sorted(self._get_method_modifiers(node)))
+            modifiers = node.modifiers if hasattr(node, 'modifiers') else set()
+            modifiers_str = ' '.join(sorted(modifiers))
             
             # 获取返回类型（构造函数没有返回类型）
             return_type = ''
             if isinstance(node, javalang.tree.MethodDeclaration):
                 return_type = self._get_type_name(node.return_type)
-                
+            
             # 获取方法名
             name = node.name
             
             # 获取参数列表
             params = []
-            for param in node.parameters:
-                param_type = self._get_type_name(param.type)
-                if param.varargs:
-                    param_type += '...'
-                params.append(f"{param_type} {param.name}")
-                
+            if hasattr(node, 'parameters') and node.parameters:
+                for param in node.parameters:
+                    param_type = self._get_type_name(param.type)
+                    if param.varargs:
+                        param_type += '...'
+                    params.append(f"{param_type} {param.name}")
+            
             # 构建完整签名
             signature_parts = []
-            if modifiers:
-                signature_parts.append(modifiers)
+            if modifiers_str:
+                signature_parts.append(modifiers_str)
             if return_type:
                 signature_parts.append(return_type)
             signature_parts.append(name)
@@ -550,12 +520,13 @@ class JavaASTExtractor:
             if hasattr(node, 'throws') and node.throws:
                 throws = [self._get_type_name(t) for t in node.throws]
                 signature_parts.append(f"throws {', '.join(throws)}")
-                
+            
             return ' '.join(signature_parts)
             
         except Exception as e:
             self.logger.error(f"获取方法签名时出错: {str(e)}")
-            return f"{node.name}()"
+            self.logger.error(f"节点信息: {node}")
+            return f"{node.name}()"  # 返回简单的备用签名
 
     def _get_parent(self, node, root=None):
         """获取节点的父节点
@@ -676,24 +647,21 @@ class JavaASTExtractor:
             # 遍历所有方法调用
             for path, node in tree.filter(javalang.tree.MethodInvocation):
                 try:
-                    # 找到当前方法调用所在的方法声明
                     method_decl = self._find_parent_method(path)
                     if not method_decl:
-                        self.logger.debug(f"找不到父方法: {node.member}")
                         continue
-
-                    # 获取调用者方法的完整限定名
-                    caller_method = f"{current_type}.{method_decl.name}"
                     
-                    # 获取被调用方法的完整限定名
-                    callee = self._resolve_method_call(node, current_type, field_types, self._get_cached_imports(file_path))
+                    caller_method = f"{current_type}.{method_decl.name}"
+                    # 获取当前方法的局部变量
+                    method_vars = self.method_local_vars.get(caller_method, {})
+                    # 解析方法调用，传入局部变量信息
+                    callee = self._resolve_method_call(node, current_type, field_types, self._get_cached_imports(file_path), method_vars)
                     
                     if callee:
                         self.logger.debug(f"尝试添加调用关系: {caller_method} -> {callee}")
                         
                         # 检查调用者是否在method_index中
                         if caller_method not in self.method_index:
-                            self.logger.warning(f"调用者方法不在method_index中: {caller_method}")
                             # 尝试添加调用者方法到method_index
                             method_info = {
                                 'name': method_decl.name,
@@ -709,8 +677,6 @@ class JavaASTExtractor:
 
                         # 检查被调用者是否在method_index中
                         if callee not in self.method_index:
-                            self.logger.warning(f"被调用方法不在method_index中: {callee}")
-                            # 可能是外部方法，仍然记录调用关系
                             self.logger.debug(f"记录对外部方法的调用: {callee}")
                             
                         # 添加调用关系
@@ -747,7 +713,6 @@ class JavaASTExtractor:
                         
                         # 检查调用者是否在method_index中
                         if caller_method not in self.method_index:
-                            self.logger.warning(f"调用者方法不在method_index中: {caller_method}")
                             # 尝试添加调用者方法到method_index
                             method_info = {
                                 'name': method_decl.name,
@@ -775,71 +740,126 @@ class JavaASTExtractor:
             self.logger.error(traceback.format_exc())
 
 
-    def _resolve_method_call(self, node, current_type, field_types, imports):
+    def _resolve_method_call(self, node, current_type, field_types, imports, method_vars):
+        """解析方法调用"""
         try:
             member = node.member
             qualifier = node.qualifier
             
-            # 检查是否是要排除的通用方法
-            if member in self.exclude_methods:
-                self.logger.debug(f"跳过通用方法: {member}")
+            # 定义常见的Java标准库类型
+            common_java_types = {
+                # 基础类型
+                'Object', 'String', 'Integer', 'Long', 'Double', 'Float', 'Boolean', 'Byte', 'Short', 'Character',
+                
+                # 异常类型
+                'Exception', 'RuntimeException', 'IllegalArgumentException', 'NullPointerException',
+                'IllegalStateException', 'UnsupportedOperationException', 'IndexOutOfBoundsException',
+                'NoSuchElementException', 'ClassCastException', 'ArrayIndexOutOfBoundsException',
+                
+                # 集合类型
+                'List', 'ArrayList', 'LinkedList', 'Set', 'HashSet', 'Map', 'HashMap', 'TreeMap',
+                'Collection', 'Collections', 'Arrays', 'Iterator', 'Iterable',
+                
+                # 其他常用类型
+                'StringBuilder', 'StringBuffer', 'Math', 'System', 'Class', 'Thread', 'Runnable',
+                'Optional', 'Stream', 'Collectors', 'Objects'
+            }
+            
+            self.logger.debug(f"\n=== 解析方法调用 ===")
+            self.logger.debug(f"当前类型: {current_type}")
+            self.logger.debug(f"方法名: {member}")
+            self.logger.debug(f"限定符: {qualifier}")
+            self.logger.debug(f"字段类型: {field_types}")
+            
+            def resolve_qualifier_type(qual):
+                if isinstance(qual, str):
+                    # 0. 检查是否是常见Java类型
+                    if qual in common_java_types:
+                        self.logger.debug(f"跳过Java标准库类型: {qual}")
+                        return f"java.lang.{qual}"
+                    
+                    # 1. 检查局部变量
+                    if qual in method_vars:
+                        var_type = method_vars[qual]
+                        self.logger.debug(f"找到局部变量类型: {qual} -> {var_type}")
+                        return var_type
+                    
+                    # 2. 检查字段
+                    elif qual in field_types:
+                        field_type = field_types[qual]
+                        self.logger.debug(f"找到字段类型: {qual} -> {field_type}")
+                        return field_type
+                    
+                    # 3. 检查是否是类名(静态方法调用)
+                    elif qual in imports:
+                        class_name = imports[qual]
+                        self.logger.debug(f"找到类型导入: {qual} -> {class_name}")
+                        return class_name
+                    else:
+                        # 检查是否是标准库类
+                        standard_lib_classes = {
+                            'Object': 'java.lang.Object',
+                            'String': 'java.lang.String',
+                            'Integer': 'java.lang.Integer',
+                            'Long': 'java.lang.Long',
+                            'Double': 'java.lang.Double',
+                            'Float': 'java.lang.Float',
+                            'Boolean': 'java.lang.Boolean',
+                            'Byte': 'java.lang.Byte',
+                            'Short': 'java.lang.Short',
+                            'Character': 'java.lang.Character',
+                            'System': 'java.lang.System',
+                            'Thread': 'java.lang.Thread',
+                            'Exception': 'java.lang.Exception',
+                            'RuntimeException': 'java.lang.RuntimeException',
+                            'Throwable': 'java.lang.Throwable',
+                            'Class': 'java.lang.Class',
+                            'Math': 'java.lang.Math',
+                            'StringBuilder': 'java.lang.StringBuilder',
+                            'StringBuffer': 'java.lang.StringBuffer'
+                        }
+                        
+                        # 如果限定符包含点号，可能是标准库的静态字段引用
+                        if '.' in qual:
+                            parts = qual.split('.')
+                            if parts[0] in standard_lib_classes:
+                                full_name = f"{standard_lib_classes[parts[0]]}.{'.'.join(parts[1:])}"
+                                self.logger.debug(f"解析为标准库静态字段引用: {full_name}")
+                                return full_name
+                        
+                        # 检查是否是标准库类
+                        if qual in standard_lib_classes:
+                            self.logger.debug(f"解析为标准库类: {standard_lib_classes[qual]}")
+                            return standard_lib_classes[qual]
+                            
+                        # 如果不是标准库类，尝试解析为同包下的类
+                        current_package = current_type.rsplit('.', 1)[0]
+                        possible_class = f"{current_package}.{qual}"
+                        self.logger.debug(f"尝试解析为同包类: {possible_class}")
+                        return possible_class
+                    
                 return None
             
-            self.logger.debug(f"\n调试信息:")
-            self.logger.debug(f"当前类型: {current_type}")
-            self.logger.debug(f"方法成员: {member}")
-            self.logger.debug(f"限定符: {qualifier}")
-            self.logger.debug(f"限定符类型: {type(qualifier)}")
-            self.logger.debug(f"字段类型映射: {field_types}")
-            self.logger.debug(f"导入信息: {imports}")
-            
-            callee = None
-            
-            if isinstance(qualifier, str):
-                self.logger.debug(f"字符串限定符: {qualifier}")
-                if qualifier in field_types:
-                    # 使用字段的声明类型
-                    field_type = field_types[qualifier]
-                    # 如果字段类型在导入中有对应的完整类名，使用完整类名
-                    if field_type in imports:
-                        callee = f"{imports[field_type]}.{member}"
-                        self.logger.debug(f"字段类型调用(从导入): {callee}")
-                    else:
-                        callee = f"{field_type}.{member}"
-                        self.logger.debug(f"字段类型调用(原始): {callee}")
-                elif qualifier in imports:
-                    callee = f"{imports[qualifier]}.{member}"
-                    self.logger.debug(f"导入类型调用: {callee}")
-                elif '.' in qualifier:
-                    # 已经是完整限定名
-                    callee = f"{qualifier}.{member}"
-                    self.logger.debug(f"完整限定名调用: {callee}")
-                else:
-                    # 在同包中查找
-                    current_package = current_type.rsplit('.', 1)[0]
-                    callee = f"{current_package}.{qualifier}.{member}"
-                    self.logger.debug(f"同包调用: {callee}")
-            
-            # 在返回之前检查是否是标准库调用
-            if callee:
-                # 检查是否是要排除的包
-                if any(callee.startswith(prefix) for prefix in self.exclude_prefixes):
-                    self.logger.debug(f"跳过标准库调用: {callee}")
-                    return None
+            # 解析限定符的类型
+            qualifier_type = resolve_qualifier_type(qualifier)
+            if qualifier_type:
+                callee = f"{qualifier_type}.{member}"
+                self.logger.debug(f"解析出的方法调用: {callee}")
                 
-                # 移除多余的点号并返回
+                # 规范化调用名称
                 callee = re.sub(r'\.+', '.', callee)
                 callee = callee.strip('.')
-                self.logger.debug(f"保留调用: {callee}")
+                return callee
             
-            return callee
-
+            # 如果没有限定符，检查是否是Java标准库类型的直接调用
+            if not qualifier and member in common_java_types:
+                self.logger.debug(f"跳过Java标准库类型的直接调用: {member}")
+                return f"java.lang.{member}"
+            
+            return None
+            
         except Exception as e:
-            self.logger.error(f"解析方法调用时出错:")
-            self.logger.error(f"异常类型: {type(e)}")
-            self.logger.error(f"异常信息: {str(e)}")
-            self.logger.error(f"当前类型: {current_type}")
-            self.logger.error(f"节点信息: {vars(node)}")
+            self.logger.error(f"解析方法调用时出错: {str(e)}")
             return None
 
     def analyze_file(self, file_path, modified_lines):
@@ -1092,7 +1112,7 @@ class JavaASTExtractor:
                 elif line.startswith('-') and not line.startswith('---'):
                     # 对于删除的行，我们也记录相应位置
                     changes[current_file]['modified_lines'].add(current_line_number)
-                elif not line.startswith('\\'):  # 忽略 "\ No newline at end of file"
+                elif not line.startswith('\ No newline at end of file'):  # 忽略 "\ No newline at end of file"
                     current_line_number += 1
 
         # 将集合转换为排序后的列表
@@ -1241,80 +1261,6 @@ class JavaASTExtractor:
             self.logger.error(traceback.format_exc())
             return None
 
-    def _get_method_signature(self, method_node):
-        """获取方法的签名
-        
-        Args:
-            method_node: javalang.tree.MethodDeclaration 或 javalang.tree.ConstructorDeclaration
-            
-        Returns:
-            str: 方法签名字符串
-        """
-        try:
-            # 获取方法修饰符
-            modifiers = method_node.modifiers if hasattr(method_node, 'modifiers') else set()
-            modifiers_str = ' '.join(sorted(modifiers)) + ' ' if modifiers else ''
-            
-            # 获取返回类型（构造函数没有返回类型）
-            return_type = ''
-            if hasattr(method_node, 'return_type') and method_node.return_type:
-                if hasattr(method_node.return_type, 'name'):
-                    return_type = method_node.return_type.name + ' '
-                else:
-                    return_type = str(method_node.return_type) + ' '
-            
-            # 获取方法名
-            name = method_node.name
-            
-            # 获取参数
-            params = []
-            if hasattr(method_node, 'parameters') and method_node.parameters:
-                for param in method_node.parameters:
-                    param_type = param.type.name if hasattr(param.type, 'name') else str(param.type)
-                    param_name = param.name
-                    params.append(f"{param_type} {param_name}")
-            
-            params_str = ', '.join(params)
-            
-            # 构建完整签名
-            signature = f"{modifiers_str}{return_type}{name}({params_str})"
-            return signature.strip()
-            
-        except Exception as e:
-            self.logger.error(f"获取方法签名时出错: {str(e)}")
-            return f"{method_node.name}()"  # 返回简单的备用签名
-
-    def _get_field_types(self, tree):
-        """获取类中所有字段的类型信息
-        
-        Args:
-            tree: Java AST树
-            
-        Returns:
-            dict: 字段名到类型的映射
-        """
-        field_types = {}
-        try:
-            # 遍历所有字段声明
-            for _, node in tree.filter(javalang.tree.FieldDeclaration):
-                # 获取字段类型
-                field_type = None
-                if isinstance(node.type, javalang.tree.ReferenceType):
-                    field_type = node.type.name
-                elif hasattr(node.type, 'value'):
-                    field_type = node.type.value
-                    
-                # 获取所有声明的字段名
-                for declarator in node.declarators:
-                    if field_type:
-                        field_types[declarator.name] = field_type
-                        
-            return field_types
-            
-        except Exception as e:
-            self.logger.error(f"获取字段类型时出错: {str(e)}")
-            return {}
-
     def _find_parent_method(self, path):
         """查找当前节点所在的方法声明
         
@@ -1325,12 +1271,22 @@ class JavaASTExtractor:
             MethodDeclaration/ConstructorDeclaration: 父方法声明节点，如果没找到则返回None
         """
         try:
+            if not path:
+                self.logger.warning("AST 路径为空，无法查找父方法")
+                return None
+
             # 从路径中查找方法声明
             for node in reversed(path):
-                if isinstance(node, (javalang.tree.MethodDeclaration, javalang.tree.ConstructorDeclaration)):
+                if isinstance(node, javalang.tree.MethodDeclaration):
                     return node
+                elif isinstance(node, javalang.tree.ConstructorDeclaration):
+                    return node
+                elif isinstance(node, javalang.tree.LambdaExpression):
+                    return node  # Lambda 也可能是一个方法上下文
+
+            self.logger.debug("未找到父方法声明")
             return None
-            
+                
         except Exception as e:
             self.logger.error(f"查找父方法时出错: {str(e)}")
             return None
@@ -1395,3 +1351,172 @@ class JavaASTExtractor:
             import traceback
             self.logger.error(traceback.format_exc())
             return None
+
+    def _resolve_type_name(self, type_node, imports, package_name):
+        """解析完整的类型名称"""
+        try:
+            self.logger.debug("\n=== 解析类型名称 ===")
+            self.logger.debug(f"输入类型: {type_node}")
+            self.logger.debug(f"导入信息: {imports}")
+            self.logger.debug(f"包名: {package_name}")
+            
+            if isinstance(type_node, str):
+                type_name = type_node
+                
+                # 1. 基本类型直接返回
+                if type_name in {'byte', 'short', 'int', 'long', 'float', 'double', 'boolean', 'char'}:
+                    return type_name
+                    
+                # 2. 已经是完整限定名
+                if '.' in type_name:
+                    return type_name
+                    
+                # 3. 检查导入
+                if type_name in imports:
+                    import_info = imports[type_name]
+                    if isinstance(import_info, dict):
+                        if import_info['type'] == 'class':
+                            return import_info['fqn']
+                        elif import_info['type'] == 'package':
+                            return f"{import_info['package']}.{type_name}"
+                    elif isinstance(import_info, str):
+                        return import_info
+                    
+                # 4. java.lang包中的类
+                if type_name in {'String', 'Object', 'Integer', 'Boolean', 'Double', 'Float', 'Exception', 'RuntimeException'}:
+                    return f"java.lang.{type_name}"
+                    
+                # 5. 同包类型
+                if package_name:
+                    return f"{package_name}.{type_name}"
+                    
+                return type_name
+                
+            # 处理AST节点类型
+            if isinstance(type_node, javalang.tree.BasicType):
+                return type_node.name
+                
+            if isinstance(type_node, javalang.tree.ReferenceType):
+                # 递归处理基础类型
+                base_type = self._resolve_type_name(type_node.name, imports, package_name)
+                # 处理数组维度
+                array_dims = '[]' * len(type_node.dimensions) if hasattr(type_node, 'dimensions') else ''
+                return base_type + array_dims
+                
+            return str(type_node)
+            
+        except Exception as e:
+            self.logger.error(f"解析类型名称时出错: {str(e)}")
+            return str(type_node)
+
+    def _find_parent_class(self, path):
+        """查找当前路径中的类声明节点"""
+        try:
+            for node in reversed(path):
+                if isinstance(node, (javalang.tree.ClassDeclaration, javalang.tree.InterfaceDeclaration)):
+                    return node
+                
+            self.logger.warning("在路径中未找到类或接口声明")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"查找父类时出错: {str(e)}")
+            return None
+
+    def _get_field_types(self, tree):
+        """获取类中所有字段的类型信息
+        
+        Args:
+            tree: Java AST树
+            
+        Returns:
+            dict: 字段名到类型的映射，如 {'name': 'java.lang.String'}
+        """
+        try:
+            field_types = {}
+            imports = self._get_imports(tree)
+            package_name = self._get_package_name(tree)
+            
+            # 遍历所有字段声明
+            for path, field_decl in tree.filter(javalang.tree.FieldDeclaration):
+                # 获取字段类型
+                field_type = self._resolve_type_name(field_decl.type, imports, package_name)
+                
+                # 处理每个字段声明器
+                for declarator in field_decl.declarators:
+                    field_name = declarator.name
+                    field_types[field_name] = field_type
+                    
+                    # 处理初始化器中的类型信息
+                    if declarator.initializer:
+                        if isinstance(declarator.initializer, javalang.tree.MethodInvocation):
+                            # 处理工厂方法调用
+                            if (declarator.initializer.arguments and 
+                                isinstance(declarator.initializer.arguments[0], javalang.tree.ClassReference)):
+                                class_ref = declarator.initializer.arguments[0]
+                                creator_type = class_ref.type.name
+                                resolved_type = self._resolve_type_name(creator_type, imports, package_name)
+                                field_types[field_name] = resolved_type
+                
+                    self.logger.debug(f"添加字段类型: {field_name} -> {field_types[field_name]}")
+            
+            return field_types
+            
+        except Exception as e:
+            self.logger.error(f"获取字段类型时出错: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {}
+
+    def _get_imports(self, tree):
+        """获取文件的导入信息
+        
+        Args:
+            tree: Java AST树
+            
+        Returns:
+            dict: 导入信息映射
+        """
+        imports = {}
+        
+        # 处理导入声明
+        for _, node in tree.filter(javalang.tree.Import):
+            if node.path:
+                if isinstance(node.path, list):
+                    import_path = '.'.join(str(p.value) if hasattr(p, 'value') else str(p) for p in node.path)
+                else:
+                    import_path = str(node.path)
+                
+                # 处理静态导入和普通导入
+                if node.static:
+                    class_name = '.'.join(import_path.split('.')[:-1])
+                    method_name = import_path.split('.')[-1]
+                    imports[method_name] = {'type': 'static', 'class': class_name, 'member': method_name}
+                else:
+                    if '*' in import_path:
+                        package = import_path.replace('.*', '')
+                        imports[package] = {'type': 'package', 'package': package}
+                    else:
+                        simple_name = import_path.split('.')[-1]
+                        imports[simple_name] = {'type': 'class', 'fqn': import_path}
+        
+        # 添加 java.lang 包的隐式导入
+        imports['java.lang'] = {'type': 'package', 'package': 'java.lang'}
+        
+        return imports
+
+    def _get_package_name(self, tree):
+        """获取文件的包名
+        
+        Args:
+            tree: Java AST树
+            
+        Returns:
+            str: 包名，如果没有则返回None
+        """
+        for _, node in tree.filter(javalang.tree.PackageDeclaration):
+            if isinstance(node.name, list):
+                return '.'.join(str(n.value) for n in node.name if hasattr(n, 'value'))
+            else:
+                return str(node.name)
+        return None
