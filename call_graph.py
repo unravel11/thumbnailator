@@ -37,7 +37,8 @@ class CallGraph:
                 'end_line': method_info.get('end_line'),
                 'type': method_info['type'],
                 'modifiers': modifiers,
-                'signature': signature  # 使用获取到的或构建的签名
+                'signature': signature,  # 使用获取到的或构建的签名
+                'source_code': method_info.get('source_code')  # 添加源代码字段
             }
             # 确保方法在 edges 中有一个入口
             if qualified_name not in self.edges:

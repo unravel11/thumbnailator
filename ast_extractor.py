@@ -325,7 +325,7 @@ class JavaASTExtractor:
                     self._process_statement(stmt, method_vars, imports, package_name)
 
     def _find_node_end_line(self, node):
-        """查找节点的结束行号"""
+        """查找节点的结束行号，包括结束大括号"""
         try:
             if not hasattr(node, 'position') or not node.position:
                 return None
@@ -349,7 +349,7 @@ class JavaASTExtractor:
             if hasattr(node, 'token_end_pos') and node.token_end_pos:
                 max_line = max(max_line, node.token_end_pos[0])
             
-            return max_line
+            return max_line+1
             
         except Exception as e:
             self.logger.error(f"查找节点结束行号时出错: {str(e)}")
@@ -422,11 +422,18 @@ class JavaASTExtractor:
             
             # 获取行号信息
             start_line = node.position.line if hasattr(node, 'position') and node.position else None
-            end_line = None
-            if hasattr(node, 'body') and node.body:
-                last_statement = node.body[-1] if isinstance(node.body, list) else node.body
-                if hasattr(last_statement, 'position'):
-                    end_line = last_statement.position.line
+            end_line = self._find_node_end_line(node)
+            
+            # 获取方法源代码
+            source_code = None
+            if start_line and end_line:
+                try:
+                    with open(os.path.join(self.src_root, file_path), 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+                        # 获取方法的源代码（包括开始和结束行）
+                        source_code = ''.join(lines[start_line-1:end_line])
+                except Exception as e:
+                    self.logger.error(f"读取方法源代码时出错: {str(e)}")
             
             method_info = {
                 'name': method_name,
@@ -440,7 +447,8 @@ class JavaASTExtractor:
                 'parameters': self._get_method_parameters(node),
                 'return_type': self._get_method_return_type(node) if method_type != 'constructor' else None,
                 'throws': list(node.throws) if hasattr(node, 'throws') and node.throws else [],
-                'signature': self._get_method_signature(node)
+                'signature': self._get_method_signature(node),
+                'source_code': source_code
             }
             
             self.method_index[qualified_name] = method_info
@@ -891,10 +899,45 @@ class JavaASTExtractor:
             # 获取受影响方法的完整调用关系
             method_calls = self._get_complete_call_relations(affected_methods)
             
+            # 添加方法源代码信息
+            method_sources = {}
+            for method_name in affected_methods:
+                if method_name in self.method_index:
+                    method_info = self.method_index[method_name]
+                    method_sources[method_name] = {
+                        'source_code': method_info.get('source_code', ''),
+                        'start_line': method_info.get('start_line'),
+                        'end_line': method_info.get('end_line')
+                    }
+            
+            # 添加调用者和被调用者的源代码
+            for method_name in method_calls['callers']:
+                for caller in method_calls['callers'][method_name]['callers']:
+                    if caller in self.method_index:
+                        caller_info = self.method_index[caller]
+                        method_calls['callers'][method_name]['caller_sources'] = method_calls['callers'][method_name].get('caller_sources', {})
+                        method_calls['callers'][method_name]['caller_sources'][caller] = {
+                            'source_code': caller_info.get('source_code', ''),
+                            'start_line': caller_info.get('start_line'),
+                            'end_line': caller_info.get('end_line')
+                        }
+            
+            for method_name in method_calls['callees']:
+                for callee in method_calls['callees'][method_name]['callees']:
+                    if callee in self.method_index:
+                        callee_info = self.method_index[callee]
+                        method_calls['callees'][method_name]['callee_sources'] = method_calls['callees'][method_name].get('callee_sources', {})
+                        method_calls['callees'][method_name]['callee_sources'][callee] = {
+                            'source_code': callee_info.get('source_code', ''),
+                            'start_line': callee_info.get('start_line'),
+                            'end_line': callee_info.get('end_line')
+                        }
+            
             result = {
                 'affected_methods': affected_methods,
                 'method_line_map': method_line_map,
-                'method_calls': method_calls
+                'method_calls': method_calls,
+                'method_sources': method_sources  # 添加方法源代码信息
             }
             
             self.logger.info(f"分析完成: {file_path}")
