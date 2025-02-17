@@ -1,60 +1,74 @@
-_*June 28, 2023: Thumbnailator 0.4.20 has been released!
-See [Changes](https://github.com/coobird/thumbnailator/wiki/Changes) for details.*_
+# AST Extraction
 
-_*Thumbnailator is now available through
-[Maven](https://github.com/coobird/thumbnailator/wiki/Maven)!*_
+一个基于 Python 的 Java 代码分析工具，用于分析 Java 项目中的代码修改和方法调用关系。
 
-# What is Thumbnailator?
+## 功能特点
 
-![](https://raw.githubusercontent.com/wiki/coobird/thumbnailator/img/home/home-image.png)
+- 分析 Git diff 中的代码修改
+- 构建方法调用关系图
+- 识别受影响的方法和依赖关系
+- 支持方法级别的源代码追踪
+- 生成详细的分析报告
 
-_Thumbnailator_ is a thumbnail generation library for Java.
+## 主要组件
 
-# Why Thumbnailator?
-Making high-quality thumbnails in Java can be a fairly difficult task.
+### JavaChangeAnalyzer (java_analyzer.py)
 
-Learning how to use the Image I/O API, Java 2D API, image processing,
-image scaling techniques, ... but fear not! _Thumbnailator_ will take care
-of all those things for you!
+Java 代码修改分析器的主要入口类，负责：
+- 分析 Git diff 文本
+- 协调整体分析流程
+- 生成分析报告
+- 配置日志记录
 
-Thumbnailator is a single JAR file with no dependencies to external libraries,
-making development and deployment simple and easy. It is also available on
-the Maven Central Repository for easy inclusion in Maven projects.
+### CallGraph (call_graph.py)
 
-# How simple is Thumbnailator?
+方法调用关系图的核心实现，提供：
+- 构建方法调用关系
+- 存储方法节点信息
+- 分析调用者和被调用者关系
+- 序列化调用图数据
 
-_Thumbnailator_'s fluent interface can be used to perform fairly complicated
-thumbnail processing task in one simple step.
+### JavaASTExtractor (ast_extractor.py)
 
-For example, creating JPEG thumbnails of image files in a directory, all
-resized to a maximum dimension of 640 pixels by 480 pixels while preserving
-the aspect ratio of the original image can be performed by the following:
+Java 代码的 AST 分析器，功能包括：
+- 解析 Java 源代码
+- 提取方法信息
+- 分析方法调用
+- 处理类型解析和导入关系
 
+## 使用方法
+
+1. 安装依赖：
+```bash
+pip install javalang
 ```
-Thumbnails.of(new File("path/to/directory").listFiles())
-    .size(640, 480)
-    .outputFormat("jpg")
-    .toFiles(Rename.PREFIX_DOT_THUMBNAIL);
+
+2. 运行分析器：
+```bash
+python java_analyzer.py --src-dir /path/to/java/project --output-dir analysis_results [--debug]
 ```
 
-The fluent interface provided by the _Thumbnailator_ simplifies the task of
-making thumbnails into a single method call!
+参数说明：
+- `--src-dir`: Java 源代码根目录路径（必需）
+- `--output-dir`: 分析结果输出目录（可选，默认为 analysis_results）
+- `--debug`: 启用调试模式，输出详细日志（可选）
 
-No need to access the Image I/O API and manually manipulate `BufferedImage`s
-through `Graphics2D` objects. _Thumbnailator_ does all of that for you.
+## 输出结果
 
-# What can Thumbnailator do?
+分析器会生成以下文件：
+- 分析日志文件（`java_analysis_YYYYMMDD_HHMMSS.log`）
+- 调用图数据（`call_graph.json`）
+- 文件分析结果（`analysis_all_files_YYYYMMDD_HHMMSS.json`）
 
-The following pages have more information on what _Thumbnailator_ can do:
+## 注意事项
 
-* [Features](https://github.com/coobird/thumbnailator/wiki/Features)
-* [Examples](https://github.com/coobird/thumbnailator/wiki/Examples)
-* [Thumbnailator API Documentation](https://coobird.github.io/thumbnailator/javadoc/0.4.20/)
-* [Frequently Asked Questions](https://github.com/coobird/thumbnailator/wiki/FAQ)
+- 确保 Java 源代码目录结构完整
+- 建议在分析大型项目时使用 `--debug` 模式追踪详细信息
+- 分析结果会包含方法的源代码，请注意信息安全
 
-# Disclaimer
-*Thumbnailator is still early in its development, and the APIs are subject to
-change at any time.*
+## 技术依赖
 
-# License
-Thumbnailtor is released under the MIT License.
+- Python 3.6+
+- javalang 解析器
+- 标准库：json, logging, os, datetime, re 等
+
